@@ -29,6 +29,11 @@ python3 -m http.server 8080
 - **Strefy**: prostokątne obszary dla VLAN-ów, podsieci, pomieszczeń lub szaf rack. Przesunięcie strefy przesuwa też urządzenia, które się w niej znajdują.
 - **Właściwości urządzenia**: nazwa / hostname, status (online / offline / serwis / planowane), IP, VLAN, MAC, model, system, specyfikacja, lokalizacja, usługi, kolor i notatki.
 - **Inwentarz**: tabela urządzeń z filtrowaniem i sortowaniem (IP sortowane numerycznie), wykrywaniem konfliktów i błędnych adresów IP oraz listą VLAN-ów.
+- **Problemy do rozwiązania**: lista problemów, zadań i planów rozbudowy w zakładce **Problemy**.
+  - Każdy wpis ma priorytet (krytyczny / wysoki / średni / niski), status (otwarty / w trakcie / rozwiązany) i opis kroków do rozwiązania.
+  - Wpis można powiązać z dowolnymi urządzeniami, połączeniami i strefami. Urządzenia z otwartymi problemami mają na schemacie znacznik z liczbą problemów w kolorze najwyższego priorytetu. Kliknięcie znacznika pokazuje problemy tego urządzenia.
+  - Wykrywanie automatyczne: konflikty i błędne adresy IP, urządzenia offline lub w serwisie, urządzenia bez połączeń, urządzenia bez adresu IP oraz VM / kontenery nieprzypisane do hosta. Każdą pozycję dodasz do listy jednym kliknięciem.
+  - Eksport listy do checklisty Markdown lub CSV.
 - **Zapis**: automatycznie w przeglądarce (localStorage), a także import i eksport do pliku JSON.
 - **Eksport**: PNG (wysoka rozdzielczość), SVG i CSV z inwentarzem (format dla polskiego Excela).
 - Cofnij / ponów, kopiuj / wklej / duplikuj, wyrównywanie i równomierne rozkładanie, przyciąganie do siatki, zoom i dopasowanie widoku.
@@ -48,6 +53,7 @@ python3 -m http.server 8080
 | Przesuwanie zaznaczenia | Strzałki (z `Shift` o jedną kratkę siatki) |
 | Zapis do pliku | `Ctrl+S` |
 | Edycja nazwy | Podwójne kliknięcie elementu |
+| Zgłoszenie problemu | Zaznacz urządzenia i kliknij **+ Nowy problem** w zakładce Problemy (albo **Zgłoś problem** w panelu właściwości) |
 
 Typ nowego połączenia ustawia się automatycznie: AP z urządzeniem końcowym to Wi-Fi, VM lub kontener to połączenie wirtualne, a UPS lub PDU to zasilanie.
 
@@ -70,6 +76,7 @@ Nowy typ urządzenia dodasz, dopisując wpis do `HL.DEVICE_TYPES` w `js/devices.
   "name": "Mój home lab",
   "nodes": [{ "id": "n1", "type": "switch", "x": 0, "y": 0, "name": "switch-core", "ip": "192.168.1.2", "vlan": "1" }],
   "links": [{ "id": "l1", "from": "n1", "to": "n2", "type": "fiber", "speed": "10G", "fromPort": "SFP+1", "toPort": "", "vlan": "10" }],
-  "zones": [{ "id": "z1", "x": 0, "y": 0, "w": 400, "h": 300, "name": "VLAN 10", "desc": "192.168.10.0/24", "color": "#34d399" }]
+  "zones": [{ "id": "z1", "x": 0, "y": 0, "w": 400, "h": 300, "name": "VLAN 10", "desc": "192.168.10.0/24", "color": "#34d399" }],
+  "issues": [{ "id": "i1", "title": "Brak backupu NAS", "type": "problem", "priority": "high", "status": "open", "desc": "", "refs": ["n2"], "created": "2026-11-06" }]
 }
 ```

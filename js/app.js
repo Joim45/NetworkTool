@@ -2,7 +2,7 @@
 (function () {
   'use strict';
 
-  const { DEVICE_TYPES, CATEGORIES, LINK_TYPES, SPEEDS, SPEED_WIDTH, STATUSES } = HL;
+  const { DEVICE_TYPES, CATEGORIES, LINK_TYPES, SPEEDS, SPEED_WIDTH, STATUSES, ISSUE_TYPES, ISSUE_PRIORITIES, ISSUE_STATUSES } = HL;
 
   const GRID = 20;
   const STORE_KEY = 'homelab-topology:v1';
@@ -39,6 +39,10 @@
     .zone-desc { font-weight: 400; fill-opacity: .7; }
     .zone-resize { fill: transparent; cursor: nwse-resize; }
     .zone.selected .zone-resize { fill: currentColor; fill-opacity: .6; }
+    .node-issues { cursor: pointer; }
+    .node-issues circle { stroke: #0b1120; stroke-width: 2.5; }
+    .node-issues text { fill: #fff; font-size: 10px; font-weight: 700; text-anchor: middle; dominant-baseline: central; pointer-events: none; }
+    .zone-issues { font-weight: 700; }
     .sel-box { fill: rgba(59,130,246,.08); stroke: #3b82f6; stroke-dasharray: 4 3; }
     .temp-link { stroke: #22d3ee; stroke-dasharray: 6 4; fill: none; }
   `;
@@ -93,10 +97,12 @@
   let clipboard = null;
   let activeTab = 'props';
   const inv = { key: 'ip', dir: 1, filter: '' };
+  const iss = { filter: '', status: 'active', ref: null, edit: null };
+  let detected = [];
   const history = { stack: [], index: -1 };
 
   function blankState() {
-    return { version: 1, name: 'Mój home lab', nodes: [], links: [], zones: [] };
+    return { version: 1, name: 'Mój home lab', nodes: [], links: [], zones: [], issues: [] };
   }
   function nodeDefaults() {
     return { name: '', type: 'generic', status: 'online', ip: '', mac: '', vlan: '', model: '', os: '', specs: '', services: '', location: '', color: '', notes: '' };
@@ -107,6 +113,10 @@
   function zoneDefaults() {
     return { name: 'Strefa', desc: '', color: '#38bdf8' };
   }
+  function issueDefaults() {
+    return { title: '', type: 'problem', priority: 'medium', status: 'open', desc: '', refs: [], autoKey: '', created: today(), resolved: '' };
+  }
+  function today() { return new Date().toISOString().slice(0, 10); }
 
   function normalize(data) {
     if (!data || typeof data !== 'object' || !Array.isArray(data.nodes)) throw new Error('To nie jest plik topologii (brak listy „nodes”).');
@@ -124,13 +134,47 @@
     s.zones = (Array.isArray(data.zones) ? data.zones : []).filter((z) => z && z.id).map((z) => ({
       ...zoneDefaults(), ...str(z), id: String(z.id), x: +z.x || 0, y: +z.y || 0, w: Math.max(120, +z.w || 300), h: Math.max(80, +z.h || 200)
     }));
+    const allIds = new Set([...ids, ...s.links.map((l) => l.id), ...s.zones.map((z) => z.id)]);
+    s.issues = (Array.isArray(data.issues) ? data.issues : []).filter((i) => i && i.id).map((i) => {
+      const { refs, ...rest } = i;
+      return {
+        ...issueDefaults(), ...str(rest), id: String(i.id),
+        type: ISSUE_TYPES[i.type] ? i.type : 'problem',
+        priority: ISSUE_PRIORITIES[i.priority] ? i.priority : 'medium',
+        status: ISSUE_STATUSES[i.status] ? i.status : 'open',
+        refs: (Array.isArray(refs) ? refs : []).map(String).filter((r) => allIds.has(r))
+      };
+    });
     return s;
   }
 
   const nodeById = (id) => state.nodes.find((n) => n.id === id);
   const linkById = (id) => state.links.find((l) => l.id === id);
   const zoneById = (id) => state.zones.find((z) => z.id === id);
-  const findObj = (kind, id) => (kind === 'node' ? nodeById(id) : kind === 'link' ? linkById(id) : kind === 'zone' ? zoneById(id) : null);
+  const issueById = (id) => state.issues.find((i) => i.id === id);
+  const findObj = (kind, id) => (kind === 'node' ? nodeById(id) : kind === 'link' ? linkById(id) : kind === 'zone' ? zoneById(id) : kind === 'issue' ? issueById(id) : null);
+  const isActiveIssue = (i) => i.status !== 'done';
+  function refName(id) {
+    const n = nodeById(id);
+    if (n) return n.name;
+    const l = linkById(id);
+    if (l) return `${nodeById(l.from)?.name || '?'} ⟷ ${nodeById(l.to)?.name || '?'}`;
+    const z = zoneById(id);
+    return z ? z.name : null;
+  }
+  /** Mapa: id elementu → { count, color } dla aktywnych problemów. */
+  function issueMap() {
+    const m = {};
+    state.issues.filter(isActiveIssue).forEach((i) => {
+      const p = ISSUE_PRIORITIES[i.priority];
+      i.refs.forEach((r) => {
+        const e = m[r] || (m[r] = { count: 0, rank: 9, color: p.color });
+        e.count++;
+        if (p.rank < e.rank) { e.rank = p.rank; e.color = p.color; }
+      });
+    });
+    return m;
+  }
   const selCount = () => sel.nodes.size + sel.links.size + sel.zones.size;
 
   function clearSel() { sel.nodes.clear(); sel.links.clear(); sel.zones.clear(); }
@@ -246,6 +290,7 @@
     render();
     renderPanel();
     renderInventory();
+    renderIssues();
   }
 
   function render() {
@@ -255,7 +300,7 @@
     applyView();
     updateToolbar();
     $('#emptyHint').hidden = state.nodes.length > 0 || state.zones.length > 0;
-    $('#statusbar').textContent = `Urządzenia: ${state.nodes.length} · Połączenia: ${state.links.length} · Strefy: ${state.zones.length}` +
+    $('#statusbar').textContent = `Urządzenia: ${state.nodes.length} · Połączenia: ${state.links.length} · Strefy: ${state.zones.length} · Otwarte problemy: ${state.issues.filter(isActiveIssue).length}` +
       (selCount() ? ` · Zaznaczono: ${selCount()}` : '');
   }
 
@@ -267,6 +312,7 @@
 
   function renderNodes() {
     const dups = duplicateIPs();
+    const im = issueMap();
     nodesLayer.innerHTML = state.nodes.map((n) => {
       const t = typeInfo(n.type);
       const color = n.color || t.color;
@@ -281,6 +327,7 @@
         ${st ? `<circle class="node-status" cx="27" cy="-27" r="6" fill="${st.color}"/>` : ''}
         <text class="node-name" y="49">${esc(n.name || t.label)}</text>
         ${n.ip ? `<text class="node-ip${conflict ? ' conflict' : ''}" y="64">${esc(n.ip)}${conflict ? ' ⚠' : ''}</text>` : ''}
+        ${im[n.id] ? `<g class="node-issues" data-issues="${esc(n.id)}" transform="translate(-27 -27)"><title>Otwarte problemy: ${im[n.id].count}</title><circle r="8.5" fill="${im[n.id].color}"/><text>${im[n.id].count > 9 ? '9+' : im[n.id].count}</text></g>` : ''}
         <circle class="handle" data-handle="${esc(n.id)}" cx="31" cy="0" r="7"/>
       </g>`;
     }).join('');
@@ -338,13 +385,14 @@
 
   function renderLinks() {
     const geo = linkGeometry();
+    const im = issueMap();
     linksLayer.innerHTML = state.links.map((l) => {
       const g = geo[l.id];
       if (!g) return '';
       const t = linkInfo(l.type);
       const w = SPEED_WIDTH[l.speed] ?? 2;
       const selected = sel.links.has(l.id);
-      const text = linkText(l);
+      const text = [im[l.id] && `⚠ ${im[l.id].count}`, linkText(l)].filter(Boolean).join(' · ');
       const tw = text.length * 5.6 + 12;
       const showPorts = g.room > (text ? tw + 10 : 0);
       return `<g class="link${selected ? ' selected' : ''}" data-id="${esc(l.id)}">
@@ -352,7 +400,7 @@
         ${selected ? `<path class="link-glow" d="${g.d}" stroke-width="${w + 7}" stroke-linecap="round"/>` : ''}
         <path class="link-hit" d="${g.d}"/>
         <path class="link-line" d="${g.d}" stroke="${t.color}" stroke-width="${w}"${t.dash ? ` stroke-dasharray="${t.dash}"` : ''}/>
-        ${text ? `<g class="link-label" transform="translate(${g.lx} ${g.ly})"><rect x="${-tw / 2}" y="-9" width="${tw}" height="18" rx="9"/><text>${esc(text)}</text></g>` : ''}
+        ${text ? `<g class="link-label" transform="translate(${g.lx} ${g.ly})"><rect x="${-tw / 2}" y="-9" width="${tw}" height="18" rx="9"${im[l.id] ? ` style="stroke:${im[l.id].color}"` : ''}/><text>${esc(text)}</text></g>` : ''}
         ${showPorts && l.fromPort ? `<text class="port-label" x="${g.pa.x}" y="${g.pa.y}">${esc(l.fromPort)}</text>` : ''}
         ${showPorts && l.toPort ? `<text class="port-label" x="${g.pb.x}" y="${g.pb.y}">${esc(l.toPort)}</text>` : ''}
       </g>`;
@@ -362,11 +410,12 @@
   function renderZones() {
     // Większe strefy pod spodem, mniejsze (zagnieżdżone) na wierzchu.
     const zones = [...state.zones].sort((a, b) => b.w * b.h - a.w * a.h);
+    const im = issueMap();
     zonesLayer.innerHTML = zones.map((z) => `
       <g class="zone${sel.zones.has(z.id) ? ' selected' : ''}" data-id="${esc(z.id)}" transform="translate(${z.x} ${z.y})" style="color:${esc(z.color)}">
         <rect class="zone-body" width="${z.w}" height="${z.h}" rx="14" fill="${esc(z.color)}" fill-opacity="0.06" stroke="${esc(z.color)}"/>
         <rect class="zone-header" width="${z.w}" height="32" rx="14"/>
-        <text class="zone-title" x="14" y="21" fill="${esc(z.color)}">${esc(z.name)}${z.desc ? `<tspan class="zone-desc" dx="8">${esc(z.desc)}</tspan>` : ''}</text>
+        <text class="zone-title" x="14" y="21" fill="${esc(z.color)}">${im[z.id] ? `<tspan class="zone-issues" fill="${im[z.id].color}">⚠ ${im[z.id].count}  </tspan>` : ''}${esc(z.name)}${z.desc ? `<tspan class="zone-desc" dx="8">${esc(z.desc)}</tspan>` : ''}</text>
         <rect class="zone-resize" data-resize="${esc(z.id)}" x="${z.w - 14}" y="${z.h - 14}" width="14" height="14" rx="3"/>
       </g>`).join('');
   }
@@ -432,10 +481,16 @@
     state.nodes = state.nodes.filter((n) => !nodes.has(n.id));
     state.links = state.links.filter((l) => !sel.links.has(l.id) && !nodes.has(l.from) && !nodes.has(l.to));
     state.zones = state.zones.filter((z) => !sel.zones.has(z.id));
+    cleanIssueRefs();
     clearSel();
     pruneSel();
     commit();
     renderAll();
+  }
+
+  function cleanIssueRefs() {
+    const ids = new Set([...state.nodes.map((n) => n.id), ...state.links.map((l) => l.id), ...state.zones.map((z) => z.id)]);
+    state.issues.forEach((i) => { i.refs = i.refs.filter((r) => ids.has(r)); });
   }
 
   function copySelection() {
@@ -536,6 +591,11 @@
     const zoneEl = e.target.closest('.zone');
     svg.setPointerCapture(e.pointerId);
 
+    const badge = e.target.closest('[data-issues]');
+    if (badge && !connectMode) {
+      showIssuesFor(badge.dataset.issues);
+      return;
+    }
     if (handle && !connectMode) {
       drag = { mode: 'link', from: handle.dataset.handle, target: null };
       return;
@@ -788,6 +848,7 @@
         <div class="stat"><b>${state.links.length}</b><span>połączeń</span></div>
         <div class="stat"><b>${state.zones.length}</b><span>stref</span></div>
       </div>
+      ${state.issues.length ? `<div class="conn-item" data-action="tab-issues" style="margin-bottom:8px">⚠ Problemy do rozwiązania<span class="meta">${state.issues.filter(isActiveIssue).length} otwartych / ${state.issues.length}</span></div>` : ''}
       ${byCat.length ? `<div class="conn-list">${byCat.map(([l, v]) => `<div class="conn-item" style="cursor:default">${esc(l)}<span class="meta">${v}</span></div>`).join('')}</div>` : ''}
       <div class="section-title">Jak używać</div>
       <div class="kbd-list">
@@ -819,6 +880,7 @@
       </div>` : ''}
       <div class="actions">
         ${sel.nodes.size ? '<button class="btn" data-action="zone">Utwórz strefę wokół</button><button class="btn" data-action="duplicate">Duplikuj</button>' : ''}
+        <button class="btn" data-action="new-issue">Zgłoś problem</button>
         <button class="btn danger" data-action="delete">Usuń zaznaczone</button>
       </div>`;
   }
@@ -861,6 +923,7 @@
           <span>${port ? esc(port) + ' → ' : ''}${esc(other ? other.name : '?')}</span>
           <span class="meta">${esc([l.speed, linkInfo(l.type).label.split(' ')[0]].filter(Boolean).join(' '))}</span></div>`;
       }).join('') || '<div class="muted">Brak połączeń. Przeciągnij z niebieskiego uchwytu na inne urządzenie.</div>'}</div>
+      ${refIssuesSection(n.id)}
       <div class="actions">
         <button class="btn primary" data-action="connect-from" data-id="${esc(n.id)}">Połącz z…</button>
         <button class="btn" data-action="duplicate">Duplikuj</button>
@@ -889,6 +952,7 @@
       ${fInput('link', l, 'vlan', 'VLAN-y', 'np. 10 lub 1,10,20 (trunk)')}
       ${fInput('link', l, 'label', 'Etykieta', 'np. LAG, PoE+, WireGuard')}
       ${fText('link', l, 'notes', 'Notatki', 'np. kabel Cat6A 3 m')}
+      ${refIssuesSection(l.id)}
       <div class="actions">
         <button class="btn" data-action="reverse">Odwróć kierunek</button>
         <button class="btn danger" data-action="delete">Usuń połączenie</button>
@@ -906,6 +970,7 @@
       ${fInput('zone', z, 'desc', 'Opis / podsieć', 'np. 192.168.10.0/24')}
       ${colorField('zone', z, '#38bdf8')}
       <p class="muted">Przeciągnij nagłówek strefy, aby przesunąć ją razem z urządzeniami. Rozmiar zmienisz uchwytem w prawym dolnym rogu.</p>
+      ${refIssuesSection(z.id)}
       <div class="actions"><button class="btn danger" data-action="delete">Usuń strefę</button></div>`;
   }
 
@@ -914,7 +979,7 @@
     if (el) { el.focus(); if (el.select) el.select(); }
   }
 
-  propsPanel.addEventListener('input', (e) => {
+  function onPanelInput(e) {
     const el = e.target;
     const field = el.dataset.field;
     if (!field) return;
@@ -925,6 +990,7 @@
       if (el.value === other) { toast('Połączenie nie może łączyć urządzenia z samym sobą'); el.value = obj[field]; return; }
     }
     obj[field] = el.value;
+    if (el.dataset.kind === 'issue' && field === 'status') obj.resolved = el.value === 'done' ? today() : '';
     render();
     renderInventory();
     if (field === 'name' && $('#phTitle')) $('#phTitle').textContent = el.value;
@@ -932,13 +998,213 @@
       const w = $('#nodeWarn');
       if (w) w.innerHTML = nodeWarnings(obj);
     }
-  });
-  propsPanel.addEventListener('change', (e) => {
+    if (el.dataset.kind === 'issue') updateIssuesTabBadge();
+  }
+  function onPanelChange(e) {
     const el = e.target;
+    if (el.id === 'issueAddRef') {
+      const i = issueById(iss.edit);
+      if (i && el.value && !i.refs.includes(el.value)) { i.refs.push(el.value); commit(); renderAll(); }
+      return;
+    }
     if (!el.dataset.field) return;
     commit();
-    if (el.tagName === 'SELECT' || el.type === 'color') renderPanel();
-  });
+    if (el.tagName === 'SELECT' || el.type === 'color') {
+      if (el.dataset.kind === 'issue') renderIssues(); else renderPanel();
+    }
+  }
+  propsPanel.addEventListener('input', onPanelInput);
+  propsPanel.addEventListener('change', onPanelChange);
+  $('#issuesBody').addEventListener('input', onPanelInput);
+  $('#issuesBody').addEventListener('change', onPanelChange);
+
+  /* ---------- Problemy do rozwiązania ---------- */
+  const NEEDS_IP = ['router', 'switch', 'firewall', 'ap', 'server', 'hypervisor', 'nas', 'minipc', 'sbc', 'vm', 'container', 'vpn'];
+
+  /** Automatyczna analiza topologii – typowe problemy, które warto dodać do listy. */
+  function detectProblems() {
+    const out = [];
+    const dups = duplicateIPs();
+    dups.forEach((ip) => {
+      const nodes = state.nodes.filter((n) => ipBase(n.ip) === ip);
+      out.push({ key: 'dupip:' + ip, priority: 'high', title: `Konflikt adresu IP ${ip}`, desc: `Ten sam adres mają: ${nodes.map((n) => n.name).join(', ')}.`, refs: nodes.map((n) => n.id) });
+    });
+    const linked = new Set(state.links.flatMap((l) => [l.from, l.to]));
+    state.nodes.forEach((n) => {
+      if (n.ip && !isValidIP(n.ip)) out.push({ key: 'badip:' + n.id, priority: 'medium', title: `${n.name}: nieprawidłowy adres IP`, desc: `Wpisany adres „${n.ip}” ma błędny format.`, refs: [n.id] });
+      if (n.status === 'offline') out.push({ key: 'off:' + n.id, priority: 'high', title: `${n.name} jest offline`, desc: 'Urządzenie oznaczone jako niedziałające.', refs: [n.id] });
+      if (n.status === 'maintenance') out.push({ key: 'maint:' + n.id, priority: 'medium', title: `${n.name} w serwisie`, desc: 'Urządzenie oznaczone jako w trakcie serwisu.', refs: [n.id] });
+      if (!linked.has(n.id) && state.nodes.length > 1) out.push({ key: 'iso:' + n.id, priority: 'low', title: `${n.name} nie ma żadnych połączeń`, desc: 'Dodaj połączenie, aby urządzenie było częścią topologii.', refs: [n.id] });
+      if (!n.ip && NEEDS_IP.includes(n.type) && n.status !== 'planned') out.push({ key: 'noip:' + n.id, priority: 'low', title: `${n.name} nie ma adresu IP`, desc: 'Uzupełnij adres IP w dokumentacji.', refs: [n.id] });
+      if ((n.type === 'vm' || n.type === 'container') && !state.links.some((l) => {
+        const o = nodeById(l.from === n.id ? l.to : l.to === n.id ? l.from : null);
+        return o && ['hypervisor', 'server', 'cluster', 'nas', 'minipc', 'sbc'].includes(o.type);
+      })) out.push({ key: 'orphan:' + n.id, priority: 'low', title: `${n.name} nie jest przypisana do hosta`, desc: 'Połącz VM / kontener z hypervisorem lub serwerem, na którym działa.', refs: [n.id] });
+    });
+    const taken = new Set(state.issues.filter((i) => i.autoKey && isActiveIssue(i)).map((i) => i.autoKey));
+    return out.filter((d) => !taken.has(d.key));
+  }
+
+  function updateIssuesTabBadge() {
+    const n = state.issues.filter(isActiveIssue).length;
+    $('#issuesTab').innerHTML = `Problemy${n ? ` <span class="tab-badge">${n}</span>` : ''}`;
+  }
+
+  function sortIssues(list) {
+    return list.sort((a, b) => ISSUE_STATUSES[a.status].rank - ISSUE_STATUSES[b.status].rank
+      || ISSUE_PRIORITIES[a.priority].rank - ISSUE_PRIORITIES[b.priority].rank
+      || String(b.created).localeCompare(String(a.created)));
+  }
+
+  function issueCard(i) {
+    const pr = ISSUE_PRIORITIES[i.priority], st = ISSUE_STATUSES[i.status];
+    const refs = i.refs.map(refName).filter(Boolean);
+    return `<div class="issue-card${i.status === 'done' ? ' done' : ''}" data-action="edit-issue" data-id="${esc(i.id)}" style="--p:${pr.color}">
+      <button class="issue-check" data-action="toggle-issue" data-id="${esc(i.id)}" title="${i.status === 'done' ? 'Otwórz ponownie' : 'Oznacz jako rozwiązany'}">${i.status === 'done' ? '✓' : ''}</button>
+      <div class="ic-main">
+        <div class="ic-title">${esc(i.title || 'Bez tytułu')}</div>
+        <div class="ic-meta">
+          <span class="pill" style="color:${pr.color}">${esc(pr.label)}</span>
+          <span class="pill">${esc(ISSUE_TYPES[i.type])}</span>
+          ${i.status !== 'open' ? `<span class="pill" style="color:${st.color}">${esc(st.label)}</span>` : ''}
+          ${refs.length ? `<span class="ic-refs">${esc(refs.join(', '))}</span>` : ''}
+        </div>
+      </div>
+    </div>`;
+  }
+
+  function refIssuesSection(id) {
+    const list = sortIssues(state.issues.filter((i) => i.refs.includes(id)));
+    return `<div class="section-title">Problemy (${list.filter(isActiveIssue).length} otwartych)</div>
+      <div class="issue-list">${list.map(issueCard).join('') || '<div class="muted">Brak zgłoszonych problemów.</div>'}</div>
+      <div class="actions" style="margin-top:6px"><button class="btn" data-action="new-issue">+ Zgłoś problem / zadanie</button></div>`;
+  }
+
+  function renderIssues() {
+    updateIssuesTabBadge();
+    if (activeTab !== 'issues') return;
+    const body = $('#issuesBody');
+    $('#issuesToolbar').hidden = !!iss.edit;
+    if (iss.edit) {
+      const i = issueById(iss.edit);
+      if (i) { body.innerHTML = issueEditor(i); return; }
+      iss.edit = null;
+      $('#issuesToolbar').hidden = false;
+    }
+    const f = iss.filter.trim().toLowerCase();
+    let list = state.issues.filter((i) =>
+      (iss.status === 'all' || (iss.status === 'active' ? isActiveIssue(i) : i.status === iss.status)) &&
+      (!iss.ref || i.refs.includes(iss.ref)) &&
+      (!f || [i.title, i.desc, ...i.refs.map(refName)].join(' ').toLowerCase().includes(f)));
+    sortIssues(list);
+    detected = detectProblems().filter((d) => !iss.ref || d.refs.includes(iss.ref));
+    const active = state.issues.filter(isActiveIssue);
+    const byPr = Object.entries(ISSUE_PRIORITIES).map(([k, p]) => [p, active.filter((i) => i.priority === k).length]).filter(([, c]) => c);
+    body.innerHTML = `
+      ${iss.ref ? `<div class="ref-filter">Filtr: <b>${esc(refName(iss.ref) || '?')}</b><button class="btn" data-action="clear-issue-ref">✕ pokaż wszystkie</button></div>` : ''}
+      <div class="inv-summary">
+        <span class="chip">${active.length} otwartych</span>
+        ${byPr.map(([p, c]) => `<span class="chip" style="border-color:${p.color};color:${p.color}">${esc(p.label)}: ${c}</span>`).join('')}
+        <span class="chip">${state.issues.length - active.length} rozwiązanych</span>
+      </div>
+      <div class="issue-list">${list.map(issueCard).join('') || `<p class="muted">${state.issues.length ? 'Brak problemów pasujących do filtra.' : 'Lista jest pusta. Dodaj pierwszy problem, zadanie albo plan rozbudowy – możesz powiązać go z zaznaczonymi urządzeniami.'}</p>`}</div>
+      ${detected.length && iss.status !== 'done' ? `
+        <div class="section-title">Wykryte automatycznie (${detected.length})</div>
+        <div class="auto-list">${detected.map((d, idx) => `
+          <div class="auto-item" data-action="focus-ref" data-id="${esc(d.refs[0])}" title="${esc(d.desc)}">
+            <span class="dot" style="background:${ISSUE_PRIORITIES[d.priority].color}"></span>
+            <span class="ai-title">${esc(d.title)}</span>
+            <button class="btn" data-action="adopt-issue" data-idx="${idx}">+ Dodaj</button>
+          </div>`).join('')}</div>
+        ${detected.length > 1 ? '<div class="actions" style="margin-top:6px"><button class="btn" data-action="adopt-all">Dodaj wszystkie wykryte</button></div>' : ''}` : ''}
+      ${state.issues.length ? `<div class="section-title">Eksport listy</div>
+      <div class="actions" style="margin-top:0">
+        <button class="btn" data-action="export-issues-md">Markdown (checklista)</button>
+        <button class="btn" data-action="export-issues-csv">CSV</button>
+      </div>` : ''}`;
+  }
+
+  function issueEditor(i) {
+    const refOptions = [
+      ['Urządzenia', [...state.nodes].sort((a, b) => a.name.localeCompare(b.name, 'pl')).map((n) => [n.id, n.name])],
+      ['Połączenia', state.links.map((l) => [l.id, refName(l.id)])],
+      ['Strefy', state.zones.map((z) => [z.id, z.name])]
+    ].filter(([, o]) => o.length).map(([g, o]) => `<optgroup label="${g}">${o.filter(([id]) => !i.refs.includes(id)).map(([v, l]) => `<option value="${esc(v)}">${esc(l)}</option>`).join('')}</optgroup>`).join('');
+    return `
+      <div class="actions" style="margin:0 0 10px"><button class="btn" data-action="close-issue">← Wróć do listy</button></div>
+      ${fInput('issue', i, 'title', 'Tytuł', 'np. Brak backupu NAS poza domem')}
+      <div class="grid-2">
+        ${fSelect('issue', i, 'type', 'Rodzaj', opts(Object.entries(ISSUE_TYPES), i.type))}
+        ${fSelect('issue', i, 'priority', 'Priorytet', opts(Object.entries(ISSUE_PRIORITIES).map(([k, p]) => [k, p.label]), i.priority))}
+      </div>
+      ${fSelect('issue', i, 'status', 'Status', opts(Object.entries(ISSUE_STATUSES).map(([k, p]) => [k, p.label]), i.status))}
+      ${fText('issue', i, 'desc', 'Opis / kroki do rozwiązania', 'Co nie działa, co trzeba kupić lub skonfigurować…')}
+      <div class="section-title">Dotyczy elementów topologii</div>
+      <div class="ref-chips">${i.refs.map((r) => `<span class="ref-chip"><a data-action="focus-ref" data-id="${esc(r)}">${esc(refName(r))}</a><button data-action="unref" data-ref="${esc(r)}" title="Usuń powiązanie">✕</button></span>`).join('') || '<span class="muted">Brak powiązań – problem ogólny.</span>'}</div>
+      <label class="field" style="margin-top:8px"><span>Dodaj powiązanie</span><select id="issueAddRef"><option value="">— wybierz element —</option>${refOptions}</select></label>
+      ${selCount() ? `<button class="btn" data-action="ref-selection">Powiąż zaznaczone na płótnie (${selCount()})</button>` : ''}
+      <p class="muted" style="margin-top:12px">Utworzono: ${esc(i.created || '—')}${i.resolved ? ` · Rozwiązano: ${esc(i.resolved)}` : ''}</p>
+      <div class="actions"><button class="btn danger" data-action="delete-issue">Usuń wpis</button></div>`;
+  }
+
+  function newIssue(extra = {}) {
+    const refs = [...sel.nodes, ...sel.links, ...sel.zones];
+    const i = { ...issueDefaults(), id: uid('i'), title: 'Nowy problem', refs, ...extra };
+    state.issues.push(i);
+    commit();
+    openIssue(i.id);
+    if (!extra.autoKey) {
+      const t = $('#issuesBody [data-field="title"]');
+      if (t) { t.focus(); t.select(); }
+    }
+    return i;
+  }
+
+  function openIssue(id) {
+    iss.edit = id;
+    switchTab('issues');
+    $('#issuesBody').scrollTop = 0;
+  }
+
+  function showIssuesFor(id) {
+    iss.ref = id;
+    iss.edit = null;
+    iss.status = 'active';
+    $('#issueStatus').value = 'active';
+    switchTab('issues');
+  }
+
+  function adoptDetected(d) {
+    state.issues.push({ ...issueDefaults(), id: uid('i'), title: d.title, desc: d.desc, priority: d.priority, refs: [...d.refs], autoKey: d.key });
+  }
+
+  function issuesToMarkdown() {
+    const lines = [`# Problemy do rozwiązania – ${state.name}`, '', `_Wygenerowano: ${new Date().toLocaleString('pl-PL')}_`, ''];
+    Object.entries(ISSUE_STATUSES).forEach(([k, st]) => {
+      const list = sortIssues(state.issues.filter((i) => i.status === k));
+      if (!list.length) return;
+      lines.push(`## ${{ open: 'Otwarte', progress: 'W trakcie', done: 'Rozwiązane' }[k]} (${list.length})`, '');
+      list.forEach((i) => {
+        const refs = i.refs.map(refName).filter(Boolean);
+        lines.push(`- [${k === 'done' ? 'x' : ' '}] **[${ISSUE_PRIORITIES[i.priority].label}]** ${i.title} _(${ISSUE_TYPES[i.type]})_` + (refs.length ? ` — dotyczy: ${refs.join(', ')}` : ''));
+        if (i.desc) i.desc.split('\n').forEach((d) => lines.push(`  ${d}`));
+      });
+      lines.push('');
+    });
+    return lines.join('\n');
+  }
+
+  function exportIssuesCSV() {
+    const cell = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`;
+    const head = ['Tytuł', 'Rodzaj', 'Priorytet', 'Status', 'Dotyczy', 'Opis', 'Utworzono', 'Rozwiązano'];
+    const rows = sortIssues([...state.issues]).map((i) => [i.title, ISSUE_TYPES[i.type], ISSUE_PRIORITIES[i.priority].label, ISSUE_STATUSES[i.status].label,
+      i.refs.map(refName).filter(Boolean).join(', '), i.desc, i.created, i.resolved].map(cell).join(';'));
+    download(slug(state.name) + '-problemy.csv', '\ufeff' + [head.map(cell).join(';'), ...rows].join('\r\n'), 'text/csv;charset=utf-8');
+    toast('Wyeksportowano listę problemów');
+  }
+
+  $('#issueSearch').addEventListener('input', (e) => { iss.filter = e.target.value; renderIssues(); });
+  $('#issueStatus').addEventListener('change', (e) => { iss.status = e.target.value; renderIssues(); });
 
   /* ---------- Inwentarz ---------- */
   const INV_COLS = [
@@ -1011,8 +1277,10 @@
     $$('.tab').forEach((t) => t.classList.toggle('active', t.dataset.tab === tab));
     $('#propsPanel').hidden = tab !== 'props';
     $('#inventoryPanel').hidden = tab !== 'inventory';
+    $('#issuesPanel').hidden = tab !== 'issues';
     renderPanel();
     renderInventory();
+    renderIssues();
   }
   $$('.tab').forEach((t) => t.addEventListener('click', () => switchTab(t.dataset.tab)));
 
@@ -1157,7 +1425,70 @@
       renderAll();
     },
     'reset-color': (el) => { const n = nodeById(el.dataset.id); if (n) { n.color = ''; commit(); renderAll(); } },
-    'select-link': (el) => { selectOnly('links', el.dataset.id); renderAll(); }
+    'select-link': (el) => { selectOnly('links', el.dataset.id); renderAll(); },
+    'tab-issues': () => switchTab('issues'),
+    'new-issue': () => newIssue(),
+    'edit-issue': (el) => openIssue(el.dataset.id),
+    'close-issue': () => { iss.edit = null; renderIssues(); },
+    'toggle-issue': (el) => {
+      const i = issueById(el.dataset.id);
+      if (!i) return;
+      i.status = i.status === 'done' ? 'open' : 'done';
+      i.resolved = i.status === 'done' ? today() : '';
+      commit();
+      renderAll();
+      if (i.status === 'done') toast(`Rozwiązano: ${i.title}`);
+    },
+    'delete-issue': () => {
+      const i = issueById(iss.edit);
+      if (!i || !confirm(`Usunąć wpis „${i.title}”?`)) return;
+      state.issues = state.issues.filter((x) => x !== i);
+      iss.edit = null;
+      commit();
+      renderAll();
+    },
+    unref: (el) => {
+      const i = issueById(iss.edit);
+      if (!i) return;
+      i.refs = i.refs.filter((r) => r !== el.dataset.ref);
+      commit();
+      renderAll();
+    },
+    'ref-selection': () => {
+      const i = issueById(iss.edit);
+      if (!i) return;
+      [...sel.nodes, ...sel.links, ...sel.zones].forEach((r) => { if (!i.refs.includes(r)) i.refs.push(r); });
+      commit();
+      renderAll();
+    },
+    'focus-ref': (el) => {
+      const id = el.dataset.id;
+      const kind = nodeById(id) ? 'nodes' : linkById(id) ? 'links' : zoneById(id) ? 'zones' : null;
+      if (!kind) return;
+      selectOnly(kind, id);
+      const n = nodeById(id) || (linkById(id) && nodeById(linkById(id).from));
+      const z = zoneById(id);
+      if (n) centerOn(n); else if (z) centerOn({ x: z.x + z.w / 2, y: z.y + z.h / 2 });
+      render();
+      renderPanel();
+    },
+    'adopt-issue': (el) => {
+      const d = detected[+el.dataset.idx];
+      if (!d) return;
+      adoptDetected(d);
+      commit();
+      renderAll();
+      toast('Dodano do listy problemów');
+    },
+    'adopt-all': () => {
+      detected.forEach(adoptDetected);
+      commit();
+      renderAll();
+      toast(`Dodano ${detected.length} problemów`);
+    },
+    'clear-issue-ref': () => { iss.ref = null; renderIssues(); },
+    'export-issues-md': () => { download(slug(state.name) + '-problemy.md', issuesToMarkdown(), 'text/markdown;charset=utf-8'); toast('Wyeksportowano checklistę Markdown'); },
+    'export-issues-csv': exportIssuesCSV
   };
 
   document.addEventListener('click', (e) => {
@@ -1293,6 +1624,19 @@
     L('pve', 'ha', { type: 'virtual', speed: '' });
     L('pve', 'docker', { type: 'virtual', speed: '' });
     ['laptop', 'tv', 'plug', 'cam'].forEach((id) => L('ap', id, { type: 'wifi', speed: '' }));
+
+    const I = (title, extra) => { s.issues.push({ ...issueDefaults(), id: uid('i'), title, ...extra }); };
+    I('Urządzenia IoT mają dostęp do sieci LAN i serwerów', { type: 'problem', priority: 'critical', refs: ['fw', 'plug', 'cam'],
+      desc: 'Dodać reguły firewall blokujące ruch z VLAN 20 do VLAN 1 i 10 (poza DNS do Pi-hole).' });
+    I('Brak kopii zapasowej NAS poza domem', { type: 'problem', priority: 'high', status: 'progress', refs: ['nas'],
+      desc: 'Reguła 3-2-1: skonfigurować replikację snapshotów do chmury (np. Backblaze B2) lub drugiego NAS-a u rodziny.' });
+    I('Kamera przy wejściu – brak PoE w tym miejscu', { type: 'plan', priority: 'medium', refs: ['cam'],
+      desc: 'Przeciągnąć kabel Cat6 z switcha albo kupić injector PoE. Docelowo kamery w osobnym VLAN 30 bez dostępu do Internetu.' });
+    I('Drugi host Proxmox i klaster HA', { type: 'plan', priority: 'low', refs: ['pve', 'rpi'],
+      desc: 'Dodać pve-02 + QDevice na rpi-monitor, żeby mieć kworum i migrację VM.' });
+    I('UPS nie wyłącza bezpiecznie serwerów', { type: 'task', priority: 'medium', refs: ['ups', 'pve', 'nas'],
+      desc: 'Skonfigurować klientów NUT na pve-01 i nas-01.' });
+    I('Aktualizacja OPNsense do najnowszej wersji', { type: 'task', priority: 'medium', status: 'done', refs: ['fw'], resolved: today() });
     return s;
   }
 

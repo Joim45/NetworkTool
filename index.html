@@ -75,12 +75,27 @@
       <div class="tabs">
         <button class="tab active" data-tab="props">Właściwości</button>
         <button class="tab" data-tab="inventory">Inwentarz</button>
+        <button class="tab" data-tab="issues" id="issuesTab">Problemy</button>
       </div>
       <div id="propsPanel" class="tab-body"></div>
       <div id="inventoryPanel" class="tab-body" hidden>
         <input id="invFilter" class="search" type="search" placeholder="Filtruj: nazwa, IP, VLAN, usługa…">
         <div id="invSummary" class="inv-summary"></div>
         <div id="invTable"></div>
+      </div>
+      <div id="issuesPanel" class="tab-body" hidden>
+        <div id="issuesToolbar" class="issues-toolbar">
+          <button class="btn primary" data-action="new-issue" title="Nowy wpis – powiązany z zaznaczonymi elementami">+ Nowy problem</button>
+          <select id="issueStatus" title="Pokaż">
+            <option value="active">Do zrobienia</option>
+            <option value="open">Otwarte</option>
+            <option value="progress">W trakcie</option>
+            <option value="done">Rozwiązane</option>
+            <option value="all">Wszystkie</option>
+          </select>
+          <input id="issueSearch" class="search" type="search" placeholder="Szukaj w problemach…">
+        </div>
+        <div id="issuesBody"></div>
       </div>
     </aside>
   </main>

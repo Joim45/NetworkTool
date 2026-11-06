@@ -158,3 +158,23 @@ HL.STATUSES = {
   maintenance: { label: 'Serwis', color: '#f59e0b' },
   planned: { label: 'Planowane', color: '#94a3b8' }
 };
+
+/* Lista problemów / zadań */
+HL.ISSUE_TYPES = {
+  problem: 'Problem',
+  task: 'Zadanie',
+  plan: 'Plan rozbudowy'
+};
+
+HL.ISSUE_PRIORITIES = {
+  critical: { label: 'Krytyczny', color: '#ef4444', rank: 0 },
+  high: { label: 'Wysoki', color: '#f97316', rank: 1 },
+  medium: { label: 'Średni', color: '#eab308', rank: 2 },
+  low: { label: 'Niski', color: '#64748b', rank: 3 }
+};
+
+HL.ISSUE_STATUSES = {
+  open: { label: 'Otwarty', color: '#f87171', rank: 0 },
+  progress: { label: 'W trakcie', color: '#38bdf8', rank: 1 },
+  done: { label: 'Rozwiązany', color: '#22c55e', rank: 2 }
+};
